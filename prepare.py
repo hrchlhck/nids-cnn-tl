@@ -8,25 +8,22 @@ from tqdm import tqdm
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import confusion_matrix
+from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
 
 from pyDeepInsight import ImageTransformer
 
 from multiprocessing import Process
 
-from random import Random 
-
 DATA = Path('./data')
-R = Random(1)
 
 def stratify_df(df: pd.DataFrame, n: int) -> pd.DataFrame:
     df = df.groupby('class').apply(lambda x: x.sample(n=n))
     return df.reset_index(drop=True)
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
-    ss = MinMaxScaler(feature_range=(-1, 1))
+    ss = MinMaxScaler(feature_range=(0, 1))
     X, y = df.drop('class', axis=1), df['class']
     tmp = pd.DataFrame(ss.fit_transform(X), columns=X.columns.values)
     tmp['class'] = y
@@ -52,6 +49,11 @@ def pick_instances(year: str, n: int) -> None:
         ]
         df.drop(unwanted_columns, axis=1, inplace=True)
 
+        df.drop_duplicates(inplace=True)
+
+        if len(df) < n:
+            n = len(df)
+
         df = stratify_df(df=df, n=n)
 
         df = normalize(df=df)
@@ -73,36 +75,33 @@ def to_image() -> None:
     out_file = DATA / 'image'
 
     files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(2010, 2020)]
-
+    
     for f in files:
         it = ImageTransformer(feature_extractor='tsne', 
-                    pixels=50, random_state=1701, 
+                    pixels=25, random_state=1701, 
                     n_jobs=-1)
-
-        # Fitting with January data
-        df_train = pd.read_csv(f[0])
-        X_train = df_train.drop('class', axis=1).to_numpy()
-        y_train = df_train['class'].to_numpy()
-
-        it.fit(X_train, y_train)
 
         for month in f:
             df = pd.read_csv(month)
 
-            mat = it.transform(df.drop('class', axis=1).to_numpy(), format='scalar')
-            print(mat.shape)
+            # Sempre treinar com janeiro
+            X = df.drop('class', axis=1).to_numpy()
+            y = df['class'].to_numpy()
 
-            for i in tqdm(range(mat.shape[0])):
+            feat = it.fit_transform(X, format='scalar')
+
+            for i in tqdm(range(feat.shape[0])):
                 fig, ax = plt.subplots(1, 1, figsize=(8, 8), constrained_layout=True)
+                
+                sns.heatmap(feat[i], cbar=False, xticklabels=False, yticklabels=False, ax=ax)
 
-                cax = sns.heatmap(mat[i], cmap='hot',
-                      linewidth=0.01, linecolor='dimgrey',
-                      square=True, ax=ax, cbar=False)
-                cax.axis('off')
-                ax.grid(False)
+                atk = y[i]
+                if atk == 1:
+                    fig.savefig(out_file / month.parent.parent.name / month.parent.name / 'attack' / f'instance_{i}.png')
+                else:
+                    fig.savefig(out_file / month.parent.parent.name / month.parent.name / 'normal' / f'instance_{i}.png')
 
-                fig.savefig(out_file / month.parent.parent.name / month.parent.name / f'instance_{i}.png')
-                fig.tight_layout()
+            fig.tight_layout()
     
 def test_classifiers(clf, pos) -> None:
     files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(2010, 2020)]
@@ -152,9 +151,9 @@ def test_classifiers(clf, pos) -> None:
             ret.to_csv(DATA / 'ml_tests' / f'{clf.__class__.__name__}.csv', index=False)
 
 def run_test_classifiers():
-    Process(target=test_classifiers, args=(RandomForestClassifier(n_jobs=-1),0)).start()
-    Process(target=test_classifiers, args=(GradientBoostingClassifier(),1)).start()
-    p = Process(target=test_classifiers, args=(GaussianNB(),2))
+    Process(target=test_classifiers, args=(RandomForestClassifier(n_jobs=-1), 0)).start()
+    Process(target=test_classifiers, args=(GradientBoostingClassifier(), 1)).start()
+    p = Process(target=test_classifiers, args=(MLPClassifier(4096), 2))
     p.start()
     p.join()
 
@@ -162,29 +161,68 @@ def plot_metrics():
     result_path = DATA / 'ml_tests'
     output_path = DATA / 'plots' / 'batch'
 
-    fig, (ax0, ax1, ax2) = plt.subplots(1, 3, figsize=(16, 4), constrained_layout=True)
-
-    axes = (ax0, ax1, ax2)
-
-    for file, ax in zip(result_path.iterdir(), axes):
-        df = pd.read_csv(file)
-
-        X, Y1, Y2 = list(range(2010, 2020)), df.groupby('year').mean()['fn'], df.groupby('year').mean()['fp']
-
-        ax.plot(X, Y1, label='FN', marker='s', ms=9, linestyle='dotted', fillstyle='none', color='red')
-        ax.plot(X, Y2, label='FP', marker='s', ms=9, linestyle='dotted', fillstyle='none', color='black')
-        ax.set(xticks=X, xlim=(2009, 2020), xlabel='Year')
-        ax.set(ylim=(-300, 25_300), ylabel='Average number of instances')
-        ax.set_title(file.stem)
-        ax.legend()
+    years = list(range(2010, 2020))
     
-    fig.savefig(output_path / 'metrics.png', dpi=210)
-    plt.show()
+    for year in years:
+        fig, axes = plt.subplots(1, 3, figsize=(16, 4), constrained_layout=True)
+        for file, ax in zip(result_path.iterdir(), axes):
+            df = pd.read_csv(file)
 
+            df['fnr'] = df['fn'] / (df['fn'] + df['tp'])
+            df['fpr'] = df['fp'] / (df['fp'] + df['tn'])
+
+            X, Y1, Y2 = list(range(1, 13)), df[df['year'] == year]['fn'], df[df['year'] == year]['fp']
+
+            ax.plot(X, Y1, label='FN', marker='s', ms=9, linestyle='dotted', fillstyle='none', color='red')
+            ax.plot(X, Y2, label='FP', marker='s', ms=9, linestyle='dotted', fillstyle='none', color='black')
+            ax.set(xticks=X, xlim=(0, 13), xlabel='Month')
+            ax.set(ylim=(-400, 26_000), ylabel='Average Error Rate (%)')
+            ax.set_title(file.stem)
+            ax.legend()
+
+        fig.suptitle(year)
+        fig.savefig(output_path / f'metrics_{year}.png', dpi=210)
+
+def feature_extractor(_from: int, to: int) -> None:
+    print(f"Started feature extractor from {_from} to {to}")
+    files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(_from, to)]
+
+    # np.maximum as 'relu'
+    map_features = lambda X, clf: np.maximum(np.matmul(X, clf.coefs_[0]) + clf.intercepts_[0], 0)
+
+    for f in tqdm(files):
+        mlp = MLPClassifier(hidden_layer_sizes=(2048,), verbose=True, max_iter=50)
+
+        # Getting january data 
+        df = pd.read_csv(f[0])
+        X = df.drop('class', axis=1).to_numpy()
+        y = df['class'].to_numpy()
+
+        mlp.fit(X, y)
+
+        for month in tqdm(f):    
+            df = pd.read_csv(month)
+            X = df.drop('class', axis=1).to_numpy()
+            y = df['class'].to_numpy()
+
+            mapped_df = pd.DataFrame(data=map_features(X, mlp), columns=[f'neuron_{i}' for i in range(mlp.hidden_layer_sizes[0])])
+            mapped_df['class'] = y
+
+            mapped_df.to_csv(DATA / 'csv' / month.parent.parent.name / month.parent.name / 'augmented_features.csv', index=False)    
+
+def run_feature_extractor() -> None:
+    Process(target=feature_extractor, args=(2010, 2013)).start()
+    Process(target=feature_extractor, args=(2014, 2017)).start()
+    p = Process(target=feature_extractor, args=(2018, 2020))
+    p.start()
+    p.join()
+    
 def main() -> None:
+    # pick_all_years()
     # run_test_classifiers()
     # plot_metrics()
-    to_image()
+    # to_image()
+    run_feature_extractor()
 
 if __name__ == '__main__':
     main()
