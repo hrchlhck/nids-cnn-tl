@@ -1,5 +1,9 @@
 __pycache__/
 *.pyx
 
-data/
+augmented_features.csv
+!./data/csv
+data/image
+data/ml_tests
+data/plots
 venv/

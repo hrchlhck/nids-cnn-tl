@@ -74,22 +74,22 @@ def pick_all_years() -> None:
 def to_image() -> None:
     out_file = DATA / 'image'
 
-    files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(2010, 2020)]
+    files = [sorted([Path(f'data/csv/{f}/{m.name}/augmented_features.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(2010, 2020)]
     
     for f in files:
         it = ImageTransformer(feature_extractor='tsne', 
-                    pixels=25, random_state=1701, 
+                    pixels=100, random_state=1701, 
                     n_jobs=-1)
 
+        df = pd.read_csv(f[0])
+
+        # Sempre treinar com janeiro
+        X = df.drop('class', axis=1).to_numpy()
+        y = df['class'].to_numpy()
+
+        feat = it.fit_transform(X, format='scalar')
+
         for month in f:
-            df = pd.read_csv(month)
-
-            # Sempre treinar com janeiro
-            X = df.drop('class', axis=1).to_numpy()
-            y = df['class'].to_numpy()
-
-            feat = it.fit_transform(X, format='scalar')
-
             for i in tqdm(range(feat.shape[0])):
                 fig, ax = plt.subplots(1, 1, figsize=(8, 8), constrained_layout=True)
                 
@@ -100,6 +100,7 @@ def to_image() -> None:
                     fig.savefig(out_file / month.parent.parent.name / month.parent.name / 'attack' / f'instance_{i}.png')
                 else:
                     fig.savefig(out_file / month.parent.parent.name / month.parent.name / 'normal' / f'instance_{i}.png')
+                break
 
             fig.tight_layout()
     
@@ -222,7 +223,25 @@ def main() -> None:
     # run_test_classifiers()
     # plot_metrics()
     # to_image()
-    run_feature_extractor()
+    # run_feature_extractor()
+
+    it = ImageTransformer(feature_extractor='tsne', 
+                    pixels=75, random_state=1701, 
+                    n_jobs=-1)
+
+    df = pd.read_csv('data/csv/2010/01/augmented_features.csv')
+
+    X = df.drop('class', axis=1).to_numpy()
+
+    feat = it.fit_transform(X, format='scalar')
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8), constrained_layout=True)
+    
+    sns.heatmap(feat[0], cbar=False, xticklabels=False, yticklabels=False, ax=ax)
+
+    fig.savefig('teste.png')
+    fig.tight_layout()
+
 
 if __name__ == '__main__':
     main()
