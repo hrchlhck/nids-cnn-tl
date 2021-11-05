@@ -1,9 +1,10 @@
 import pandas as pd
 import numpy as np
 import seaborn as sns
-import matplotlib.pyplot as plt
-import dask.dataframe as dd
+import warnings
+import pickle
 
+import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib import font_manager
 
@@ -13,7 +14,6 @@ from tqdm import tqdm
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.neural_network import MLPClassifier
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
 
 from pyDeepInsight import ImageTransformer
@@ -78,50 +78,75 @@ def pick_allget_years() -> None:
     Process(target=func, args=(2014, 2017)).start()
     Process(target=func, args=(2018, 2019)).start()
 
-def to_image() -> None:
+def save_fig(features, y, start_idx, out, _id):
+    prog = tqdm(range(features.shape[0]), position=0)
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8), constrained_layout=True)
+
+    for i in prog:
+        sns.heatmap(features[i], cbar=False, xticklabels=False, yticklabels=False, ax=ax)
+
+        if y[i] == 1:
+            fig.savefig(out / 'attack' / f'instance_{i+start_idx}.jpg', format='jpg')
+        else:
+            fig.savefig(out / 'normal' / f'instance_{i+start_idx}.jpg', format='jpg')
+        plt.cla()
+        prog.update(1)
+
+def to_image(max_processes=4) -> None:
+    global DATA
     out_file = DATA / 'image'
 
     files = [sorted([Path(f'data/csv/{f}/{m.name}/augmented_features.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(2012, 2013)]
-    
+
     for f in files:
-        it = ImageTransformer(feature_extractor='tsne', 
+        if not Path('image_transformer.obj') in list(Path('.').glob('*.obj')):
+            print("Creating Image Transformer")
+            it = ImageTransformer(feature_extractor='tsne', 
                     pixels=64, random_state=1701, 
                     n_jobs=-1)
 
-        df = pd.read_csv(f[0], low_memory=True)
+            df = pd.read_csv(f[0], low_memory=True)
 
-        # Always train with january data
-        X = df.drop('class', axis=1).values
-        y = df['class'].values
+            # Always train with january data
+            X = df.drop('class', axis=1).to_numpy()
+            y = df['class'].to_numpy()
 
-        print("Fitting Image Transformer")
-        feat = it.fit_transform(X, format='rgb')
+            print("Fitting Image Transformer")
+            feat = it.fit_transform(X, format='scalar')
 
-        for month in tqdm(f):
+            with open('image_transformer.obj', mode='wb+') as fp:
+                fp.write(pickle.dumps(it))
+            
+            del df, X, y
+        else:
+            print("Loading image transformer")
+            with open('image_transformer.obj', mode='rb') as fp:
+                it = pickle.loads(fp.read())
+
+        for month in f:
+            print('Generating images for month', month.parent.name)
             df = pd.read_csv(month, low_memory=True)
 
             # Always train with january data
-            X = df.drop('class', axis=1).values
-            y = df['class'].values
+            y = df['class'].to_numpy()
+            print(len(y))
 
-            feat = it.transform(X)
+            print("Transforming data")
+            feat = it.transform(df.drop('class', axis=1).to_numpy(), format='scalar')
 
-            for i in tqdm(range(feat.shape[0])):
-                fig, ax = plt.subplots(1, 1, figsize=(8, 8), constrained_layout=True)
-                
-                sns.heatmap(feat[i], cbar=False, xticklabels=False, yticklabels=False, ax=ax)
+            out = out_file / month.parent.parent.name / month.parent.name
+            actual_boundary = 0
+            for i in range(max_processes):
+                slice_ = slice(actual_boundary, len(y) // max_processes + actual_boundary)
+                p = Process(target=save_fig, args=(feat[slice_], y[slice_], actual_boundary, out, i))
+                p.start()
+                actual_boundary += len(y) // max_processes 
+            p.join()
 
-                atk = y[i]
-                if atk == 1:
-                    fig.savefig(out_file / month.parent.parent.name / month.parent.name / 'attack' / f'instance_{i}.png')
-                else:
-                    fig.savefig(out_file / month.parent.parent.name / month.parent.name / 'normal' / f'instance_{i}.png')
-                break
-
-            fig.tight_layout()
+            del df, feat, y                
     
 def test_classifiers(clf, pos, update=False) -> None:
-    files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(2010, 2020)]
+    files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(2012, 2013)]
     output_prefix = DATA / 'ml_tests'
     clf_name = clf.__class__.__name__
     out_fname = output_prefix / f'{clf_name}.csv'
@@ -150,8 +175,13 @@ def test_classifiers(clf, pos, update=False) -> None:
             X_test, y_test = df.drop('class', axis=1), df['class']
 
             if update == True and last_month < str(month.parent.name):
-                last_month = month.parent.name
                 out_fname = output_prefix / f'{clf_name}_update.csv'
+                df_last = pd.read_csv(f'data/csv/2012/{last_month}/all.csv')
+
+                print(last_month, month.parent.name)
+                X_train, y_train = df_last.drop('class', axis=1), df['class']
+                clf.fit(X_train, y_train)
+                last_month = month.parent.name
 
             y_pred = clf.predict(X_test)
             tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
@@ -184,12 +214,12 @@ def run_test_classifiers():
     p.start()
     p.join()
 
-    print("Starting tests with monthly updates")
-    Process(target=test_classifiers, args=(RandomForestClassifier(n_jobs=-1), 0, True)).start()
-    Process(target=test_classifiers, args=(GradientBoostingClassifier(), 1, True)).start()
-    p = Process(target=test_classifiers, args=(MLPClassifier(), 2, True))
-    p.start()
-    p.join()
+    # print("Starting tests with monthly updates")
+    # Process(target=test_classifiers, args=(RandomForestClassifier(n_jobs=-1), 0, True)).start()
+    # Process(target=test_classifiers, args=(GradientBoostingClassifier(), 1, True)).start()
+    # p = Process(target=test_classifiers, args=(MLPClassifier(), 2, True))
+    # p.start()
+    # p.join()
 
 def plot_metrics():
     """ The function intent was to pick all years and select the best of them in terms of accuracy """
@@ -234,7 +264,7 @@ def plot_metrics2(year: int) -> None:
         print(file.stem)
 
         ax.plot(X, Y1, label='FN', marker='s', ms=9, linestyle='dotted', fillstyle='none', color='red')
-        ax.plot(X, Y2, label='FP', marker='s', ms=9, linestyle='dotted', fillstyle='none', color='black')
+        ax.plot(X, Y2, label='FP', marker='o', ms=9, linestyle='dotted', fillstyle='none', color='black')
         ax.set(xticks=X, xlim=(-1, 12), xlabel='Month')
         ax.tick_params(axis='x', rotation=60)
         ax.set(ylim=(-10, 100), ylabel='Average Error Rate (%)')
@@ -250,7 +280,7 @@ def feature_extractor(_from: int, to: int) -> None:
     map_features = lambda X, clf: np.maximum(np.matmul(X, clf.coefs_[0]) + clf.intercepts_[0], 0)
 
     for f in tqdm(files):
-        mlp = MLPClassifier(hidden_layer_sizes=(4096,), verbose=True, max_iter=200)
+        mlp = MLPClassifier(hidden_layer_sizes=(4096 // 2,), verbose=True, max_iter=250, learning_rate='')
 
         # Getting january data 
         df = pd.read_csv(f[0])
@@ -285,6 +315,8 @@ def main() -> None:
     # run_feature_extractor()
 
 if __name__ == '__main__':
+    warnings.simplefilter('ignore')
+
     # Font setup
     fonts_path = ['/usr/local/share/fonts/p/']
     fonts = mpl.font_manager.findSystemFonts(fontpaths=fonts_path, fontext='ttf')
