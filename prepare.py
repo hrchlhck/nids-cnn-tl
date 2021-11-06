@@ -14,19 +14,22 @@ from tqdm import tqdm
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.neural_network import MLPClassifier
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import confusion_matrix
 
 from pyDeepInsight import ImageTransformer
 
 from multiprocessing import Process
+from threading import Thread, Semaphore
 
 DATA = Path('./data')
 MONTHS_NAME = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 MONTHS = [(str(i)) if i >= 10 else f"0{i}" for i in range(1, 13)]
 MONTHS = {month: name for month, name in zip(MONTHS, MONTHS_NAME)}
+MULTIPLEXER = Semaphore(3)
 
 def stratify_df(df: pd.DataFrame, n: int) -> pd.DataFrame:
-    df = df.groupby('class').apply(lambda x: x.sample(n=n))
+    df = df.groupby('class').apply(lambda x: x.sample(n=n, replace=True))
     return df.reset_index(drop=True)
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
@@ -145,81 +148,96 @@ def to_image(max_processes=4) -> None:
 
             del df, feat, y                
     
-def test_classifiers(clf, pos, update=False) -> None:
-    files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(2012, 2013)]
+def test_classifiers(clf, pos, semaphore, update=False) -> None:
+    files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in [2016, 2012]]
     output_prefix = DATA / 'ml_tests'
     clf_name = clf.__class__.__name__
-    out_fname = output_prefix / f'{clf_name}.csv'
 
     ret = pd.DataFrame(columns=['year', 'month', 'fp', 'fn', 'tp', 'tn', 'accuracy', 'recall', 'precision'])
 
-    pbar_files = tqdm(files, position=pos)
-    for f in pbar_files:
-        last_month = '01'
-        
-        pbar_files.set_description(f"Classifier: {clf_name}")
-        
-        # Attempt to fix "FloatingPointError: invalid value encountered in double_scalars"
-        df = pd.read_csv(f[0])
-        num_cols = df.select_dtypes('number').columns.values
-        df[num_cols] = df[num_cols].round(5)
+    msg = f"Starting tests with {clf_name} without monthly updates"
 
-        X_train, y_train = df.drop('class', axis=1), df['class']
+    if update:
+        msg = msg.replace('without', 'with')
 
-        clf.fit(X_train, y_train)
+    with semaphore:
+        print(msg)
+        pbar_files = tqdm(files, position=pos)
+        for f in pbar_files:
+            last_month = '01'
+            
+            pbar_files.set_description(f"Classifier: {clf_name}")
+            
+            year = f[0].parent.parent.name
+            
+            # Attempt to fix "FloatingPointError: invalid value encountered in double_scalars"
+            df = pd.read_csv(f[0])
+            num_cols = df.select_dtypes('number').columns.values
+            df[num_cols] = df[num_cols].round(5)
 
-        pbar_months = tqdm(f, position=pos)
-        for month in pbar_months:
+            X_train, y_train = df.drop('class', axis=1), df['class']
 
-            df = pd.read_csv(month)
-            X_test, y_test = df.drop('class', axis=1), df['class']
+            clf.fit(X_train, y_train)
+            pbar_months = tqdm(f, position=pos)
+            for month in pbar_months:
+                current_month = month.parent.name
+                df = pd.read_csv(month)
+                X_test, y_test = df.drop('class', axis=1), df['class']
 
-            if update == True and last_month < str(month.parent.name):
-                out_fname = output_prefix / f'{clf_name}_update.csv'
-                df_last = pd.read_csv(f'data/csv/2012/{last_month}/all.csv')
+                if update == True and last_month < current_month:                    
+                    df_last = pd.read_csv(f'data/csv/{year}/{last_month}/all.csv')
 
-                print(last_month, month.parent.name)
-                X_train, y_train = df_last.drop('class', axis=1), df['class']
-                clf.fit(X_train, y_train)
-                last_month = month.parent.name
+                    print(last_month, current_month)
 
-            y_pred = clf.predict(X_test)
-            tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+                    X_train, y_train = df_last.drop('class', axis=1), df['class']
+                    clf.fit(X_train, y_train)
+                    last_month = current_month
 
-            tmp = 1 if tp + fn == 0 else tp + fn
-            recall = tp / (tmp)
+                y_pred = clf.predict(X_test)
+                tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
 
-            tmp = 1 if tp + fp == 0 else tp + fp
-            precision = tp / (tmp)
-            data = {
-                'year': month.parent.parent.name,
-                'month': month.parent.name,
-                'fp': fp,
-                'fn': fn,
-                'tp': tp,
-                'tn': tn,
-                'accuracy': (tp + tn) / len(df),
-                'recall': recall,
-                'precision': precision,
-                # 'f1score': 2 * ((recall * precision) / (recall + precision)),
-            }
-            ret = ret.append(pd.Series(data), ignore_index=True)
-            ret.to_csv(out_fname, index=False)
+                tmp = 1 if tp + fn == 0 else tp + fn
+                recall = tp / (tmp)
+
+                tmp = 1 if tp + fp == 0 else tp + fp
+                precision = tp / (tmp)
+                data = {
+                    'year': year,
+                    'month': current_month,
+                    'fp': fp,
+                    'fn': fn,
+                    'tp': tp,
+                    'tn': tn,
+                    'accuracy': (tp + tn) / len(df),
+                    'recall': recall,
+                    'precision': precision,
+                    'f1score': 2 * ((recall * precision) / (recall + precision)),
+                }
+
+                out_fname = output_prefix / f'{clf_name}.csv'
+                if update == True:
+                    out_fname = output_prefix / f'{clf_name}_update.csv'
+
+                ret = ret.append(pd.Series(data), ignore_index=True)
+                ret.to_csv(out_fname, index=False)
 
 def run_test_classifiers():
-    print("Starting tests without monthly updates")
-    Process(target=test_classifiers, args=(RandomForestClassifier(n_jobs=-1), 0)).start()
-    Process(target=test_classifiers, args=(GradientBoostingClassifier(), 1)).start()
-    p = Process(target=test_classifiers, args=(MLPClassifier(), 2))
-    p.start()
-    p.join()
+    classif = [
+        RandomForestClassifier(n_jobs=-1),
+        DecisionTreeClassifier(),
+        GradientBoostingClassifier(),
+        RandomForestClassifier(n_jobs=-1),
+        DecisionTreeClassifier(),
+        GradientBoostingClassifier(),
+    ]
 
-    # print("Starting tests with monthly updates")
-    # Process(target=test_classifiers, args=(RandomForestClassifier(n_jobs=-1), 0, True)).start()
-    # Process(target=test_classifiers, args=(GradientBoostingClassifier(), 1, True)).start()
-    # p = Process(target=test_classifiers, args=(MLPClassifier(), 2, True))
-    # p.start()
-    # p.join()
+    for i in range(len(classif)):
+        params = (classif[i], 0, MULTIPLEXER, True)
+
+        if i < len(classif) // 2:
+            params = (classif[i], 0, MULTIPLEXER, False)
+
+        Thread(target=test_classifiers, args=params).start()
 
 def plot_metrics():
     """ The function intent was to pick all years and select the best of them in terms of accuracy """
@@ -302,17 +320,18 @@ def feature_extractor(_from: int, to: int) -> None:
 def run_feature_extractor() -> None:
     # Process(target=feature_extractor, args=(2010, 2013)).start()
     # Process(target=feature_extractor, args=(2014, 2017)).start()
-    p = Process(target=feature_extractor, args=(2012, 2013))
+    p = Process(target=feature_extractor, args=(2016, 2017))
     p.start()
     p.join()
     
 def main() -> None:
+    # pick_instances('2016', 25_000)
     # pick_allget_years()
     # run_test_classifiers()
     # plot_metrics()
-    # plot_metrics2(2012)
-    to_image()
-    # run_feature_extractor()
+    # plot_metrics2(2016)
+    # to_image()
+    run_feature_extractor()
 
 if __name__ == '__main__':
     warnings.simplefilter('ignore')
