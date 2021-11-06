@@ -103,7 +103,7 @@ def to_image(max_processes=4) -> None:
             print("Creating Image Transformer")
             it = ImageTransformer(feature_extractor='tsne', 
                     pixels=64, random_state=1701, 
-                    n_jobs=-1)
+                    n_jobs=4)
 
             df = pd.read_csv(f[0], low_memory=True)
 
@@ -112,7 +112,7 @@ def to_image(max_processes=4) -> None:
             y = df['class'].to_numpy()
 
             print("Fitting Image Transformer")
-            feat = it.fit_transform(X, format='scalar')
+            feat = it.fit(X)
 
             with open('image_transformer.obj', mode='wb+') as fp:
                 fp.write(pickle.dumps(it))
