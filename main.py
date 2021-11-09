@@ -1,24 +1,24 @@
 from pathlib import Path
 from tensorflow.keras.applications.inception_v3 import InceptionV3
+from tensorflow.kears.applications import ResNet50, VGG16
 from tensorflow.keras.layers import Input
 from tensorflow import keras
 
-from sklearn.metrics import classification_report
+from sklearn import metrics
+from tqdm import tqdm
 
 import matplotlib.pyplot as plt
 
 import tensorflow as tf
 import numpy as np
 
-def main() -> None:       
-    width, height = 128, 128
-    batch_size = 32
+def fit_model(model_name: str, data_path: str, batch_size=32, width=80, height=80) -> None:       
     input_tensor = Input(shape=(width, height, 3))
 
-    data_dir = Path('data/image/2012/01/')
+    data_path = Path(data_path)
 
     train_ds = tf.keras.utils.image_dataset_from_directory(
-        data_dir,
+        data_path,
         validation_split=0.2,
         subset="training",
         seed=123,
@@ -26,7 +26,7 @@ def main() -> None:
         batch_size=batch_size)
 
     val_ds = tf.keras.utils.image_dataset_from_directory(
-        data_dir,
+        data_path,
         validation_split=0.2,
         subset="validation",
         seed=123,
@@ -44,7 +44,14 @@ def main() -> None:
     class_names = train_ds.class_names
     print(class_names)
 
-    model = InceptionV3(input_tensor=input_tensor, weights='imagenet', include_top=False)
+    model_kwargs = {'input_tensor': input_tensor, 'weights': 'imagenet', 'include_top': False}
+
+    model = InceptionV3(**model_kwargs)
+
+    if model_name.lower() == 'vgg16':
+        model = VGG16(**model_kwargs)
+    elif model_name.lower() == 'resnet50':
+        model = ResNet50(**model_kwargs)
 
     model.trainable = False
 
@@ -58,23 +65,95 @@ def main() -> None:
     outputs = keras.layers.Dense(1)(x)
     model = keras.Model(input_tensor, outputs)
 
-    metrics = ['accuracy']
     model.compile(optimizer=keras.optimizers.Adam(),
                 loss=keras.losses.BinaryCrossentropy(from_logits=True),
                 metrics=[keras.metrics.BinaryAccuracy()])
 
-    history = model.fit(train_ds, validation_data=val_ds, epochs=10, use_multiprocessing=True, workers=4)
+    model.fit(train_ds, validation_data=val_ds, epochs=10, use_multiprocessing=True, workers=4)
 
-    test_loss, test_acc = model.evaluate(val_ds, verbose=2)
+    model.save(f'{model_name}.h5')
+
+def plot_roc(model_path: str, data_path: str, width=80, height=80, batch_size=32) -> None:
+    def model_predict(model, dataset):
+        y_pred = np.array(list())
+        y_true =  np.array(list())
+
+        for x, y in tqdm(dataset):
+            y_pred_tmp = model.predict_on_batch(x).flatten()
+            
+            # Apply a sigmoid since our model returns logits
+            predictions = tf.nn.sigmoid(y_pred_tmp)
+            predictions = tf.where(predictions < 0.5, 0, 1)
+
+            y_pred = np.concatenate([y_pred, predictions.numpy()], axis=None)
+            y_true = np.concatenate([y_true, y.numpy()], axis=None)
+
+        return {'y_true': y_true, 'y_pred': y_pred}
     
-    fig, ax = plt.subplots(1, 1, figsize=(5, 5), constrained_layout=True)
+    # Loading the models
+    models = dict()
+    for model_path in Path(model_path).iterdir():
+        name = model_path.stem
+        models[name] = keras.models.load_model(model_path)
+        print('Loaded', name)
 
-    ax.plot(history.history['binary_accuracy'], label='accuracy', marker='s', color='black', linestyle='dotted', fillstyle='none')
-    ax.plot(history.history['val_binary_accuracy'], label = 'val_accuracy', marker='o', color='red', linestyle='dotted', fillstyle='none')
-    ax.set(xlabel='Epoch')
-    ax.set(ylabel='Accuracy', ylim=[.5, 1])
-    ax.legend(loc='lower right', frameon=False)
-    plt.show()
+    # Preparing the dataset
+    data_path = Path(data_path)
+    dataset = tf.keras.utils.image_dataset_from_directory(
+                data_path,
+                class_names=['attack', 'normal'],
+                seed=123,
+                image_size=(width, height),
+                batch_size=batch_size)
+
+    # Predicting values
+    results = dict()
+    for name, model in models.items():
+        print("Started predicting values for", name)
+        results[name] = model_predict(model, dataset)
+
+        print("Some metrics:")
+        cm = metrics.confusion_matrix(results[name]['y_true'], results[name]['y_pred'])
+        tn, fp, fn, tp = cm.ravel()
+
+        print('\tFPR:', fp  / (fn + tp))
+        print('\tFNR:', fp / (fp + tn))
+
+    # Plotting ROC curve
+    fig, ax = plt.subplots(1, 1, figsize=(4, 4), constrained_layout=True)
+    colors = ['red', 'blue']
+
+    for i, (model, model_metrics) in enumerate(results.items()):
+        labels = model_metrics['y_true'].reshape(-1, 1)
+        pred = model_metrics['y_pred'].reshape(-1, 1)
+
+        fpr, tpr, thresholds = metrics.roc_curve(labels, pred, pos_label=None)
+        roc_auc = metrics.auc(fpr, tpr)
+        print(model, roc_auc)
+
+        lw = 2
+        ax.plot(fpr, tpr, color=colors[i], lw=lw, label=model, linestyle='dotted')
+
+        if i == 0:
+            ax.plot([0, 1], [0, 1], color='black', lw=lw, linestyle='--')
+            
+        ax.set(xlim=[-0.05, 1.05], xlabel='FPR')
+        ax.set(ylim=[-0.05, 1.05], ylabel='FPR')
+        ax.legend(loc="upper center", frameon=False, ncol=2, bbox_to_anchor=(.5, 1.12))
+    fig.savefig('roc.jpg', format='jpg', dpi=210)
+
+def main() -> None:
+    data_path = 'data/image/2016/01'
+    # fit_model(model_name='vgg16', data_path=data_path)
+
+    plot_roc(model_path='data/models', data_path=data_path)
 
 if __name__ == '__main__':
+    config = tf.compat.v1.ConfigProto()
+    config.gpu_options.allow_growth = True
+    sess = tf.compat.v1.Session(config=config)
+
+    from tensorflow.python.keras import backend as K
+    K.set_session(sess)
+
     main()
