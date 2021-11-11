@@ -17,15 +17,17 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import confusion_matrix
 
+from imblearn.under_sampling import RandomUnderSampler
+
 from pyDeepInsight import ImageTransformer
 
 from multiprocessing import Process
 from threading import Thread, Semaphore
 
-DATA = Path('./data')
-MONTHS_NAME = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-MONTHS = [(str(i)) if i >= 10 else f"0{i}" for i in range(1, 13)]
-MONTHS = {month: name for month, name in zip(MONTHS, MONTHS_NAME)}
+from lib import *
+
+from IPython import embed
+
 MULTIPLEXER = Semaphore(3)
 
 def stratify_df(df: pd.DataFrame, n: int) -> pd.DataFrame:
@@ -39,47 +41,52 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     tmp['class'] = y
     return tmp
 
-def pick_instances(year: str, n: int) -> None:
-    file = DATA / 'csv' / year 
-    months = list(file.iterdir())
+def pick_instances(year: str, view='VIEGAS') -> None:
+    file = DATA / 'csv' / view / year 
+    months = list(sorted(file.iterdir()))
     days_per_month = [list(days.iterdir()) for days in months if days.is_dir()]
 
+    print(year)
     for days in tqdm(days_per_month):
         df = pd.DataFrame() 
 
         for d in tqdm(days):
             df = df.append(pd.read_csv(d), ignore_index=True)
-    
-        df = df.sample(frac=1).reset_index(drop=True)
 
         # Removing unwanted columns
         unwanted_columns = [
             'MAWILAB_taxonomy', 'MAWILAB_label', 
             'MAWILAB_nbDetectors', 'MAWILAB_distance',
         ]
+
+        if view == 'VIEGAS':
+            unwanted_columns += ['VIEGAS_numberOfDifferentServices_A', 'VIEGAS_numberOfDifferentDestinations_A']
+
         df.drop(unwanted_columns, axis=1, inplace=True)
 
-        df.drop_duplicates(inplace=True)
+        ss = MinMaxScaler(feature_range=(0, 1))
+        X, y = df.drop('class', axis=1), df['class']
+        df[X.columns.values] = ss.fit_transform(X)
+        df['class'] = y
 
-        if len(df) < n:
-            n = len(df)
+        rus = RandomUnderSampler(random_state=0)
 
-        df = stratify_df(df=df, n=n)
+        X_sampled, y_sampled = rus.fit_resample(df.drop('class', axis=1), df['class'])
 
-        df = normalize(df=df)
+        df_bal = pd.DataFrame(columns=X_sampled.columns)
+        df_bal[X_sampled.columns] = X_sampled
+        df_bal['class'] = y_sampled
 
-        print("Writing csv for year", year, 'month', days[0].parent.name)
-        df.to_csv(DATA / 'csv' / days[0].parent.parent.name / days[0].parent.name / 'all.csv', index=False)    
+        print(df_bal['class'].value_counts() / len(df_bal) * 100)
+
+        print("Writing csv for year", year, 'month', days[0].parent.name, 'at view', view)
+        df_bal.to_csv(DATA / 'csv' / view /days[0].parent.parent.name / days[0].parent.name / 'all.csv', index=False)    
 
 def pick_allget_years() -> None:
-    def func(fr, to) -> None:
-        for year in range(fr, to):
-            print("Started", year)
-            pick_instances(str(year), 25_000)
-    
-    Process(target=func, args=(2010, 2013)).start()
-    Process(target=func, args=(2014, 2017)).start()
-    Process(target=func, args=(2018, 2019)).start()
+    # Process(target=pick_instances, args=('2016',)).start()
+    Process(target=pick_instances, args=('2017',)).start()
+    Process(target=pick_instances, args=('2018',)).start()
+    Process(target=pick_instances, args=('2019',)).start()
 
 def save_fig(features, y, start_idx, out, _id):
     prog = tqdm(range(features.shape[0]), position=0)
@@ -148,51 +155,50 @@ def to_image(max_processes=4) -> None:
 
             del df, feat, y                
     
-def test_classifiers(clf, pos, semaphore, update=False) -> None:
-    files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in [2016, 2012]]
+def test_classifiers(clf, pos, semaphore, update=False, view='VIEGAS') -> None:
+    files = [sorted([Path(f'data/csv/{view}/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{view}/{f}').iterdir()]) for f in range(2016, 2020)]
     output_prefix = DATA / 'ml_tests'
     clf_name = clf.__class__.__name__
 
-    ret = pd.DataFrame(columns=['year', 'month', 'fp', 'fn', 'tp', 'tn', 'accuracy', 'recall', 'precision'])
+    ret = pd.DataFrame(columns=['year', 'month', 'fp', 'fn', 'tp', 'tn', 'fnr','fpr', 'accuracy', 'recall', 'precision'])
 
     msg = f"Starting tests with {clf_name} without monthly updates"
 
     if update:
         msg = msg.replace('without', 'with')
-
     with semaphore:
         print(msg)
         pbar_files = tqdm(files, position=pos)
-        for f in pbar_files:
-            last_month = '01'
-            
-            pbar_files.set_description(f"Classifier: {clf_name}")
-            
-            year = f[0].parent.parent.name
-            
-            # Attempt to fix "FloatingPointError: invalid value encountered in double_scalars"
-            df = pd.read_csv(f[0])
-            num_cols = df.select_dtypes('number').columns.values
-            df[num_cols] = df[num_cols].round(5)
+        
+        last_month = '01'
+        last_year = files[0][0].parent.parent.name
 
-            X_train, y_train = df.drop('class', axis=1), df['class']
+        for f in pbar_files:    
+            pbar_files.set_description(f"Classifier: {clf_name}_update_{update}")
+            
+            current_year = f[0].parent.parent.name
 
-            clf.fit(X_train, y_train)
             pbar_months = tqdm(f, position=pos)
             for month in pbar_months:
                 current_month = month.parent.name
+
+                if current_month == '01':
+                    df = pd.read_csv(f[0])
+                    X_train, y_train = df.drop('class', axis=1), df['class']
+                    clf.fit(X_train, y_train)
+
+                if update == True and last_month != current_month:                    
+                    df_last = pd.read_csv(f'data/csv/{view}/{last_year}/{last_month}/all.csv')
+
+                    print('Updating %s with %s/%s (current: %s/%s)' % (clf_name, last_year, last_month, current_year, current_month))
+
+                    X, y = df_last.drop('class', axis=1), df_last['class']
+                    clf.fit(X, y)
+                    last_month = current_month
+                    last_year = current_year
+
                 df = pd.read_csv(month)
                 X_test, y_test = df.drop('class', axis=1), df['class']
-
-                if update == True and last_month < current_month:                    
-                    df_last = pd.read_csv(f'data/csv/{year}/{last_month}/all.csv')
-
-                    print(last_month, current_month)
-
-                    X_train, y_train = df_last.drop('class', axis=1), df['class']
-                    clf.fit(X_train, y_train)
-                    last_month = current_month
-
                 y_pred = clf.predict(X_test)
                 tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
 
@@ -201,34 +207,41 @@ def test_classifiers(clf, pos, semaphore, update=False) -> None:
 
                 tmp = 1 if tp + fp == 0 else tp + fp
                 precision = tp / (tmp)
+                
+                fnr = fn / (fn + tp)
+                fpr = fp / (fp + tn)
+
                 data = {
-                    'year': year,
+                    'year': current_year,
                     'month': current_month,
                     'fp': fp,
                     'fn': fn,
                     'tp': tp,
                     'tn': tn,
+                    'fnr': fnr,
+                    'fpr': fpr,
                     'accuracy': (tp + tn) / len(df),
                     'recall': recall,
                     'precision': precision,
                     'f1score': 2 * ((recall * precision) / (recall + precision)),
                 }
 
-                out_fname = output_prefix / f'{clf_name}.csv'
+                out_fname = output_prefix / f'{clf_name}_{view}.csv'
                 if update == True:
-                    out_fname = output_prefix / f'{clf_name}_update.csv'
+                    out_fname = output_prefix / f'{clf_name}_{view}_update.csv'
 
                 ret = ret.append(pd.Series(data), ignore_index=True)
                 ret.to_csv(out_fname, index=False)
 
 def run_test_classifiers():
+    rs = 3
     classif = [
-        RandomForestClassifier(n_jobs=-1),
-        DecisionTreeClassifier(),
-        GradientBoostingClassifier(),
-        RandomForestClassifier(n_jobs=-1),
-        DecisionTreeClassifier(),
-        GradientBoostingClassifier(),
+        RandomForestClassifier(n_jobs=-1, random_state=rs),
+        DecisionTreeClassifier(random_state=rs),
+        GradientBoostingClassifier(random_state=rs),
+        RandomForestClassifier(n_jobs=-1, random_state=rs),
+        DecisionTreeClassifier(random_state=rs),
+        GradientBoostingClassifier(random_state=rs),
     ]
 
     for i in range(len(classif)):
@@ -236,63 +249,45 @@ def run_test_classifiers():
 
         if i < len(classif) // 2:
             params = (classif[i], 0, MULTIPLEXER, False)
-
-        Thread(target=test_classifiers, args=params).start()
-
-def plot_metrics():
-    """ The function intent was to pick all years and select the best of them in terms of accuracy """
-    result_path = DATA / 'ml_tests'
-    output_path = DATA / 'plots' / 'batch'
-
-    years = list(range(2010, 2020))
     
-    for year in years:
-        fig, axes = plt.subplots(1, 3, figsize=(16, 4), constrained_layout=True)
-        for file, ax in zip(result_path.iterdir(), axes):
-            df = pd.read_csv(file)
+        t = Thread(target=test_classifiers, args=params).start()
 
-            df['fnr'] = df['fn'] / (df['fn'] + df['tp'])
-            df['fpr'] = df['fp'] / (df['fp'] + df['tn'])
 
-            X, Y1, Y2 = list(range(1, 13)), df[df['year'] == year]['fn'], df[df['year'] == year]['fp']
+def plot_metrics2(year: int, how='monthly') -> None:
+    """
+        how: groupby month, bimester, trimester, quarter, semester
+    """
 
-            ax.plot(X, Y1, label='FN', marker='s', ms=9, linestyle='dotted', fillstyle='none', color='red')
-            ax.plot(X, Y2, label='FP', marker='s', ms=9, linestyle='dotted', fillstyle='none', color='black')
-            ax.set(xticks=X, xlim=(0, 13), xlabel='Month')
-            ax.set(ylim=(-400, 26_000), ylabel='Average Error Rate (%)')
-            ax.set_title(file.stem)
-            ax.legend()
-
-        fig.suptitle(year)
-        fig.savefig(output_path / f'metrics_{year}.png', dpi=210)
-
-def plot_metrics2(year: int) -> None:
     result_path = DATA / 'ml_tests'
     output_path = DATA / 'plots' / 'batch'
     
-    for file in result_path.iterdir():
+    for file in result_path.glob('*.csv'):
         fig, ax = plt.subplots(1, 1, figsize=(6, 4), constrained_layout=True)
         df = pd.read_csv(file)
 
-        df['fnr'] = df['fn'] / (df['fn'] + df['tp']) * 100
-        df['fpr'] = df['fp'] / (df['fp'] + df['tn']) * 100
-
-        df_year = df[df['year'] == year]
-        X, Y1, Y2 = list(MONTHS.values()), df_year['fnr'], df_year['fpr']
-        print(file.stem)
-
-        ax.plot(X, Y1, label='FN', marker='s', ms=9, linestyle='dotted', fillstyle='none', color='red')
-        ax.plot(X, Y2, label='FP', marker='o', ms=9, linestyle='dotted', fillstyle='none', color='black')
-        ax.set(xticks=X, xlim=(-1, 12), xlabel='Month')
-        ax.tick_params(axis='x', rotation=60)
-        ax.set(ylim=(-10, 100), ylabel='Average Error Rate (%)')
-        ax.legend(loc='upper center', frameon=False, bbox_to_anchor=(0.5, 1.2), ncol=2)
+        if not 'fnr' in df.columns.values or not 'fnr' in df.columns.values:
+            df['fnr'] = df['fn'] / (df['fn'] + df['tp']) * 100
+            df['fpr'] = df['fp'] / (df['fp'] + df['tn']) * 100
+        else:
+            df['fnr'] = df['fnr'] * 100
+            df['fpr'] = df['fpr'] * 100
         
-        fig.savefig(output_path / f'{year}_{file.stem}.png', dpi=210, transparent=True)
+        print(file.stem, how)
 
-def feature_extractor(_from: int, to: int) -> None:
+        if how == 'monthly':
+            outname = plot_monthly()
+
+        if how == 'quarter':
+            outname = plot_quarter(year, file, output_path, df, ax)
+        
+        if how == 'semester':
+            outname = plot_semester(year, file, output_path, df, ax)
+        
+        fig.savefig(outname, dpi=210, transparent=True)
+
+def feature_extractor(_from: int, to: int, view='VIEGAS') -> None:
     print(f"Started feature extractor from {_from} to {to}")
-    files = [sorted([Path(f'data/csv/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{f}').iterdir()]) for f in range(_from, to)]
+    files = [sorted([Path(f'data/csv/{view}/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{view}/{f}').iterdir()]) for f in range(_from, to)]
 
     # np.maximum as 'relu'
     map_features = lambda X, clf: np.maximum(np.matmul(X, clf.coefs_[0]) + clf.intercepts_[0], 0)
@@ -325,19 +320,20 @@ def run_feature_extractor() -> None:
     p.join()
     
 def main() -> None:
-    # pick_instances('2016', 25_000)
     # pick_allget_years()
     # run_test_classifiers()
     # plot_metrics()
-    # plot_metrics2(2016)
+    plot_metrics2(2016, 'semester')
     # to_image()
-    run_feature_extractor()
+    # run_feature_extractor()
 
 if __name__ == '__main__':
     warnings.simplefilter('ignore')
+    
+    # plt.rc('pgf', texsystem='pdflatex') 
 
     # Font setup
-    fonts_path = ['/usr/local/share/fonts/p/']
+    fonts_path = ['/usr/local/share/fonts/']
     fonts = mpl.font_manager.findSystemFonts(fontpaths=fonts_path, fontext='ttf')
 
     for font in fonts:
