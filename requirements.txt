@@ -5,4 +5,6 @@ tensorflow
 numpy
 pandas
 tqdm
+imblearn
+pdflatex
 git+git://github.com/alok-ai-lab/DeepInsight.git#egg=DeepInsight
