@@ -7,4 +7,6 @@ pandas
 tqdm
 imblearn
 pdflatex
+ipython
+opencv-python
 git+git://github.com/alok-ai-lab/DeepInsight.git#egg=DeepInsight
