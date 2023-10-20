@@ -83,10 +83,10 @@ def pick_instances(year: str, view='VIEGAS') -> None:
         df_bal.to_csv(DATA / 'csv' / view /days[0].parent.parent.name / days[0].parent.name / 'all.csv', index=False)    
 
 def pick_allget_years() -> None:
-    # Process(target=pick_instances, args=('2016',)).start()
-    Process(target=pick_instances, args=('2017',)).start()
-    Process(target=pick_instances, args=('2018',)).start()
-    Process(target=pick_instances, args=('2019',)).start()
+    Process(target=pick_instances, args=('2016',)).start()
+    # Process(target=pick_instances, args=('2017',)).start()
+    # Process(target=pick_instances, args=('2018',)).start()
+    # Process(target=pick_instances, args=('2019',)).start()
 
 def save_fig(features, y, start_idx, out, _id):
     prog = tqdm(range(features.shape[0]), position=0)
@@ -113,7 +113,7 @@ def to_image(max_processes=4) -> None:
             print("Creating Image Transformer")
             it = ImageTransformer(feature_extractor='tsne', 
                     pixels=64, random_state=1701, 
-                    n_jobs=4)
+                    n_jobs=-1)
 
             df = pd.read_csv(f[0], low_memory=True)
 
@@ -290,6 +290,10 @@ def feature_extractor(_from: int, to: int, view='VIEGAS') -> None:
     files = [sorted([Path(f'data/csv/{view}/{f}/{m.name}/all.csv') for m in Path(f'data/csv/{view}/{f}').iterdir()]) for f in range(_from, to)]
 
     # np.maximum as 'relu'
+    # coefs_ -> weights
+    # intercepts_ -> biases
+
+    # X * weights + biases -> feedforward
     map_features = lambda X, clf: np.maximum(np.matmul(X, clf.coefs_[0]) + clf.intercepts_[0], 0)
 
     for f in tqdm(files):
