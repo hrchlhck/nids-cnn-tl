@@ -47,7 +47,7 @@ if __name__ == "__main__":
 
     df = pd.read_csv(CSV_PATH)
     df = clean_dataset(df)
-    df = normalize_dataset(df, view='MOORE')
+    df = normalize_dataset(df, view=CSV_PATH.stem.split("_")[0])
     df = stratify(df, 0.2, 1701)
 
     increase_features(df, OUTPUT_PATH)

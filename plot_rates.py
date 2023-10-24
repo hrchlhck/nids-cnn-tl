@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import sys
 
 import matplotlib.pyplot as plt
@@ -30,6 +32,10 @@ if __name__ == '__main__':
 
             fpr = temp["fpr"] * 100
             fnr = temp["fnr"] * 100
+            
+            if len(MONTHS_NAME) != len(fpr):
+                print(f"{results_file.stem}({year}, {name}) different sizes ({len(MONTHS_NAME)} != {len(fpr)})")
+                break
 
             ax.plot(MONTHS_NAME, fpr, label='FPR', marker='s', ms=12, linestyle='dotted', fillstyle='none', color='black')
             ax.plot(MONTHS_NAME, fnr, label='FNR', marker='s', ms=12, linestyle='dotted', fillstyle='none', color='red')

@@ -9,4 +9,5 @@ imblearn
 pdflatex
 ipython
 opencv-python
+torch
 git+git://github.com/alok-ai-lab/DeepInsight.git#egg=DeepInsight
