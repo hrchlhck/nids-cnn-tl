@@ -19,12 +19,21 @@ if __name__ == '__main__':
 
     results_file = Path(sys.argv[1])
 
-    names = {'dt': 'Decision Tree', 'rf': 'Random Forest', 'gbt': 'Gradient Boosting'}
+    names = {'dt': 'Decision Tree', 'rf': 'Random Forest', 'gbt': 'Gradient Boosting', 'alexnet': 'alexnet'}
 
     df = pd.read_csv(results_file)
+    if 'year' not in df.columns.values:
+        df["year"] = 2014
+    
+    df["fpr"] = df["fp"] / (df["fp"] + df["tn"])
+    df["fnr"] = df["fn"] / (df["fn"] + df["tp"])
 
     for year in df.year.unique(): 
         for name in names.keys():
+            if name != 'alexnet':
+                continue
+                
+            df["classifier"] = name
             fig, ax = plt.subplots(constrained_layout=True, figsize=(7, 5))
             ax.set(ylim=(-2.5, 100), xlabel='Month', ylabel='Error Rate (%)')
             ax.tick_params(axis='x', rotation=45)

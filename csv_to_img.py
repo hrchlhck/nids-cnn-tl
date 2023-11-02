@@ -19,18 +19,6 @@ def load_model(name: str) -> None:
     with open(MODEL_PATH / name, 'rb') as fp:
         return pk.loads(fp.read())
 
-def train_image_transformer(df: np.ndarray) -> ImageTransformer:
-    it = ImageTransformer(
-        feature_extractor='tsne', 
-        pixels=224,
-    ) 
-
-    X = df[:, :-1]
-
-    it.fit(X)
-
-    return it
-
 def to_image(img_preffix: str, output: Path, df: np.ndarray, it: ImageTransformer, total: int, offset: int):
     y = df[:, -1]
 
@@ -62,9 +50,6 @@ if __name__ == "__main__":
 
     df = np.loadtxt(CSV_PATH, delimiter=",", dtype=np.float32, skiprows=1)
     print("Loaded dataset", CSV_PATH)
-    
-    it = train_image_transformer(df)
-    print("Trained transformer")
 
     n_cores = cpu_count()
 

@@ -1,5 +1,6 @@
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
 
@@ -47,9 +48,17 @@ if __name__ == '__main__':
     update_delay = 1
 
     classifiers = {
-        'rf': RandomForestClassifier(n_jobs=-1, random_state=RANDOM_STATE),
-        'dt': DecisionTreeClassifier(random_state=RANDOM_STATE),
-        'gbt': GradientBoostingClassifier(random_state=RANDOM_STATE),
+        # 'rf': RandomForestClassifier(n_jobs=-1, random_state=RANDOM_STATE),
+        # 'dt': DecisionTreeClassifier(random_state=RANDOM_STATE),
+        # 'gbt': GradientBoostingClassifier(random_state=RANDOM_STATE),
+        'mlp': MLPClassifier(
+        hidden_layer_sizes=(46 * 46,), 
+        verbose=True, 
+        max_iter=250, 
+        early_stopping=True, 
+        learning_rate='adaptive', 
+        random_state=1701,
+    )
     }
 
     results = pd.DataFrame()
@@ -61,7 +70,7 @@ if __name__ == '__main__':
 
             # December does not have events on the dataset
             # Therefore, skipping the whole year
-            if year == '2017' or year == 2017:
+            if year != '2014' and year != 2014:
                 print("Skipping year", year)
                 continue
         

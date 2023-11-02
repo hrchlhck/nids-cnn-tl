@@ -16,9 +16,9 @@ def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(unwanted_columns, axis=1, errors='ignore')
 
 def normalize_dataset(df: pd.DataFrame, view='NIGEL') -> pd.DataFrame:
-    # scaler = MinMaxScaler(feature_range=(0, 1))
-    scaler = RobustScaler()
-    features = df.drop(["NIGEL_protocol", 'class'], axis=1, errors='ignore').columns.values
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    # scaler = RobustScaler()
+    features = df.drop(['class'], axis=1, errors='ignore').columns.values
     df[features] = scaler.fit_transform(df[features])
 
     if view == 'NIGEL':
