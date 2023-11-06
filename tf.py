@@ -3,6 +3,8 @@
 from torch import nn
 from torchvision import transforms
 from torchvision.models.alexnet import AlexNet_Weights
+from torchvision.models.googlenet import GoogLeNet_Weights
+from torchvision.models.vgg import VGG16_Weights
 from torch.utils.data import DataLoader, SubsetRandomSampler, Dataset
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
@@ -13,6 +15,7 @@ from PIL.Image import Image
 import cv2
 
 import random
+from pathlib import Path
 from pandas import DataFrame, concat
 import torch.optim as optim
 import torch
@@ -21,13 +24,39 @@ import numpy as np
 SEED = 1701
 EPOCHS = 50
 MODEL_REPO = "pytorch/vision:v0.10.0"
-BATCH_SIZE = 512
+BATCH_SIZE = 256
 LEARNING_RATE = 1e-3
+
+def save_model(model: nn.Module, output_path: Path):
+    torch.save(model.state_dict(), output_path)
+
+def load_model(model: nn.Module, model_path: Path):
+    model.load_state_dict(torch.load(model_path))
 
 def __freeze(model):
     for param in model.parameters():
         param.requires_grad = False
     return model
+
+def GOOGLENET(num_classes: int) -> nn.Module:
+    googlenet = __freeze(torch.hub.load(MODEL_REPO, "googlenet", weights=GoogLeNet_Weights.DEFAULT))
+
+    googlenet._modules["fc"] = nn.Linear(in_features=1024, out_features=num_classes, bias=True)
+    nn.init.xavier_uniform_(googlenet._modules["fc"].weight)
+    googlenet._modules["softmax"] = nn.Softmax(dim=1)
+
+    return googlenet
+
+def VGG16(num_classes: int) -> nn.Module:
+    vgg16 = __freeze(torch.hub.load(MODEL_REPO, "vgg16", weights=VGG16_Weights.DEFAULT))
+    
+    vgg16._modules["classifier"][-1] = nn.Linear(4096, num_classes, bias=True)
+
+    nn.init.xavier_uniform_(vgg16._modules["classifier"][-1].weight)
+
+    vgg16._modules["classifier"].append(nn.Softmax(dim=1))
+
+    return vgg16
 
 def ALEXNET(num_classes: int):
     alexnet = __freeze(torch.hub.load(MODEL_REPO, "alexnet", weights=AlexNet_Weights.DEFAULT))
@@ -225,11 +254,11 @@ def update():
 
     df_metrics = DataFrame()
     for month in range(1, 13):
-        month_str = str(month).zfill(2)
+        month = str(month).zfill(2)
         model = CustomModel(2, ALEXNET())
         model.to(device)
         
-        # dataset = ImageFolder(f'/data/img_nids/image/{month_str}', transform=preprocess)
+        # dataset = ImageFolder(f'/data/img_nids/image/{month}', transform=preprocess)
         targets = np.array(dataset.targets)
         train_idx, test_idx = train_test_split(np.arange(len(dataset.targets)), test_size=.3, random_state=SEED, stratify=targets)
         test_idx, val_idx = train_test_split(test_idx, test_size=.3, random_state=SEED, stratify=targets[test_idx])
@@ -258,7 +287,7 @@ def update():
                     [
                         {
                             'epoch': epoch, 'train_loss': train_loss, 'train_acc': train_acc, 
-                            'val_loss': val_loss, 'val_acc': val_acc, 'month': month_str
+                            'val_loss': val_loss, 'val_acc': val_acc, 'month': month
                         }
                     ])
                 ]
@@ -268,7 +297,7 @@ def update():
         
         _, _, metrics = validate(device, 0, optimizer, loss_fn, model, data_test)
         print(metrics)
-        df_metrics = pd.concat([df_metrics, pd.DataFrame([{**metrics, 'month': month_str}])])
+        df_metrics = pd.concat([df_metrics, pd.DataFrame([{**metrics, 'month': month}])])
         df_metrics.to_csv("update_alexnet.csv", index=False)
 
 def no_update():
@@ -277,15 +306,25 @@ def no_update():
     np.random.seed(SEED)
     random.seed(SEED)
 
+    MODELS = {
+        'vgg16': VGG16,
+        'alexnet': ALEXNET,
+        'googlenet': GOOGLENET
+    }
+
+    MODEL_OUTPUT = Path("data/models/")
+    MODEL = "googlenet "
+
     device = 'cpu'
     if torch.cuda.is_available():
         print("Using CUDA")
         device = 'cuda'
 
     df_metrics = DataFrame()
-    es = EarlyStopper(5, 1e-2)
-    model = ALEXNET(num_classes=2)
+    es = EarlyStopper(5, 0)
+    model = MODELS.get(MODEL, VGG16)(num_classes=2)
     model = model.to(device)
+    MODEL_OUTPUT = MODEL_OUTPUT / (MODEL + ".model")
 
     transform = transforms.Compose([
         ToImage(),
@@ -294,10 +333,8 @@ def no_update():
     ])
 
     months = [str(i).zfill(2) for i in range(1, 13)]
-    for month in range(1, 13):
-        month_str = str(month).zfill(2)
-        
-        data = np.loadtxt(f'/data/img_nids/mlp/NIGEL_2014_{month_str}.csv', skiprows=1, dtype=np.float32, delimiter=',')
+    for month in months:       
+        data = np.loadtxt(f'/data/img_nids/mlp/NIGEL_2014_{month}.csv', skiprows=1, dtype=np.float32, delimiter=',')
         X, y = data[:, :-1], data[:, -1]
         
         del data
@@ -327,7 +364,7 @@ def no_update():
 
         losses = DataFrame()
             
-        if month_str == '01':
+        if month == '01':
             for epoch in range(1, EPOCHS + 1):
                 train_loss, train_acc = train(device, epoch, optimizer, loss_fn, model, data_train)
                 val_loss, val_acc, _ = validate(device, epoch, optimizer, loss_fn, model, data_val)
@@ -336,16 +373,18 @@ def no_update():
                     losses, 
                     DataFrame([{
                             'epoch': epoch, 'train_loss': train_loss, 'train_acc': train_acc, 
-                            'val_loss': val_loss, 'val_acc': val_acc, 'month': month_str
+                            'val_loss': val_loss, 'val_acc': val_acc, 'month': month
                     }])
                 ])
 
+                losses.to_csv(f"data/results/csv/no_update_transfer_learning_train_{MODEL}.csv", index=False)
+                save_model(model, MODEL_OUTPUT)
+                print(f"[{now()}] Saved model {MODEL} at {MODEL_OUTPUT}")
+                
                 if es.early_stop(epoch, val_loss):
                     break
-
-                losses.to_csv("data/results/csv/no_update_transfer_learning_train.csv", index=False)
         else:
-            data = np.loadtxt(f'/data/img_nids/mlp/NIGEL_2014_{month_str}.csv', skiprows=1, dtype=np.float32, delimiter=',')
+            data = np.loadtxt(f'/data/img_nids/mlp/NIGEL_2014_{month}.csv', skiprows=1, dtype=np.float32, delimiter=',')
             X, y = data[:, :-1], data[:, -1].astype(np.uint8)
             X_test = torch.Tensor(X)
             y_test = torch.LongTensor(y)
@@ -353,11 +392,12 @@ def no_update():
             cd_test  = CustomDataset(subset=(X_test, y_test), transform=transform)
             data_test  = DataLoader(cd_test, shuffle=True, batch_size=BATCH_SIZE, num_workers=8)
 
-        _, _, metrics = validate(device, 0, optimizer, loss_fn, model, data_test)
-        print(metrics, month_str)
-        df_metrics = concat([df_metrics, DataFrame([{**metrics, 'month': month_str}])])
-        df_metrics.to_csv("no_update_alexnet.csv", index=False)
+        _, _, metrics = validate(device, int(month), optimizer, loss_fn, model, data_test)
+        print(metrics, month)
+        df_metrics = concat([df_metrics, DataFrame([{**metrics, 'month': month}])])
+        df_metrics.to_csv(f"no_update_{MODEL}.csv", index=False)
         es.reset()
 
 if __name__ == "__main__":
     no_update()
+    print("Finished experiment!")

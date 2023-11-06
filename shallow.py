@@ -1,6 +1,8 @@
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neural_network import MLPClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
 
@@ -51,17 +53,11 @@ if __name__ == '__main__':
         # 'rf': RandomForestClassifier(n_jobs=-1, random_state=RANDOM_STATE),
         # 'dt': DecisionTreeClassifier(random_state=RANDOM_STATE),
         # 'gbt': GradientBoostingClassifier(random_state=RANDOM_STATE),
-        'mlp': MLPClassifier(
-        hidden_layer_sizes=(46 * 46,), 
-        verbose=True, 
-        max_iter=250, 
-        early_stopping=True, 
-        learning_rate='adaptive', 
-        random_state=1701,
-    )
+        'nb': GaussianNB()
     }
 
     results = pd.DataFrame()
+
     for key, classifier in classifiers.items():
         X_train_last, y_train_last = None, None 
         print(f"[ {dt.now()} ] Started classifier {key.upper()}")
@@ -98,11 +94,15 @@ if __name__ == '__main__':
                     print(f"[ {dt.now()} ] Updating classifier {key.upper()} with month {i} ({year})")
                     classifier.fit(X_train_last, y_train_last)
                 
-                print(f"[ {dt.now()} ] Evaluating classifier {key.upper()}")
                 # Evaluation
-                y_pred = classifier.predict(X_test)
-                tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-
+                print(f"[ {dt.now()} ] Evaluating classifier {key.upper()}")
+                if i == 0:
+                    y_pred = classifier.predict(X_test)
+                    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+                else:
+                    y_pred = classifier.predict(X)
+                    tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
+                    
                 temp = dict(
                     tp=tp,
                     tn=tn,
